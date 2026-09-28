@@ -217,20 +217,19 @@
                         <div class="bg-gradient-to-br from-puja-cream to-white p-5 rounded-2xl border border-puja-gold/40 mb-5 flex justify-between items-center shadow-md relative overflow-hidden shrink-0">
                             <div class="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-puja-gold/10 to-transparent"></div>
                             <div class="relative z-10">
-                                <p class="text-xs text-puja-darkGold font-bold uppercase tracking-widest mb-1">Total Estimated</p>
+                                <p class="text-xs text-puja-darkGold font-bold uppercase tracking-widest mb-1">Status</p>
                                 <div class="flex items-baseline gap-2">
-                                    <span id="routeDuration" class="text-3xl font-extrabold text-puja-red drop-shadow-sm">--</span>
-                                    <span id="routeDistance" class="text-gray-600 font-semibold">(--)</span>
+                                    <span id="routeDuration" class="text-2xl font-extrabold text-puja-red drop-shadow-sm">Live in Google Maps</span>
                                 </div>
                             </div>
-                            <div class="h-14 w-14 bg-white rounded-full flex items-center justify-center shadow-[inset_0_2px_10px_rgba(0,0,0,0.05),0_4px_10px_rgba(0,0,0,0.1)] relative z-10 text-3xl">
-                                🪷
+                            <div class="h-14 w-14 bg-white rounded-full flex items-center justify-center shadow-[inset_0_2px_10px_rgba(0,0,0,0.05),0_4px_10px_rgba(0,0,0,0.1)] relative z-10 text-3xl shrink-0">
+                                🗺️
                             </div>
                         </div>
 
                         <div class="text-xs text-gray-600 mb-4 flex gap-2 items-start bg-blue-50/80 p-3 rounded-xl border border-blue-100 shrink-0">
                             <svg class="w-4 h-4 shrink-0 mt-0.5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                            <span class="leading-relaxed"><span class="font-bold text-blue-700">OSRM Optimized:</span> Route calculated using Open-Source Routing Machine.</span>
+                            <span class="leading-relaxed"><span class="font-bold text-blue-700">Sequence Optimized:</span> We organized your stops efficiently and sent them directly to your navigation app.</span>
                         </div>
 
                         <div id="route-steps" class="flex-1 overflow-y-auto pr-2 space-y-0 relative pb-10 custom-scrollbar">
@@ -473,6 +472,7 @@
             return ordered;
         }
 
+        // --- NEW INSTANT GOOGLE MAPS ROUTER ---
         async function planRoute() {
             if (!state.userLocation) {
                 showToast("Please allow location access to plan a route from your spot.", "error");
@@ -483,69 +483,57 @@
 
             setLoadingState(true);
 
+            // 1. Optimize the sequence
             const selectedData = PANDALS.filter(p => state.selectedPandals.has(p.id));
             const optimized = optimizeRouteOrder(state.userLocation, selectedData);
 
-            // OSRM coordinates: Lng,Lat separated by semicolons
-            const points = [state.userLocation, ...optimized];
-            const coordString = points.map(p => `${p.lng},${p.lat}`).join(';');
+            // 2. Draw a quick dashed line on our map for visual reference
+            if (routeLayer) map.removeLayer(routeLayer);
+            const latlngs = [state.userLocation, ...optimized.map(p => [p.lat, p.lng])];
             
-            try {
-                // Fetch the driving route from the free public OSRM server
-                const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordString}?overview=full&geometries=geojson`);
-                const data = await response.json();
+            routeLayer = L.polyline(latlngs, {
+                color: '#EA580C', 
+                weight: 6, 
+                opacity: 0.7, 
+                dashArray: '10, 10',
+                lineCap: 'round'
+            }).addTo(map);
+            
+            map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
 
-                if (data.code !== 'Ok') throw new Error("OSRM failed to find a route");
+            // 3. Build the Google Maps Navigation URL instantly
+            const origin = `${state.userLocation.lat},${state.userLocation.lng}`;
+            const dest = optimized[optimized.length - 1];
+            const destination = `${dest.lat},${dest.lng}`;
 
-                // Clear old route
-                if (routeLayer) map.removeLayer(routeLayer);
-
-                // Draw new route
-                routeLayer = L.geoJSON(data.routes[0].geometry, {
-                    style: { color: '#EA580C', weight: 6, opacity: 0.8, lineCap: 'round', lineJoin: 'round' }
-                }).addTo(map);
-
-                // Fit map to route
-                map.fitBounds(routeLayer.getBounds(), { padding: [50, 50] });
-
-                const distKm = (data.routes[0].distance / 1000).toFixed(1);
-                const timeMins = Math.round(data.routes[0].duration / 60);
-
-                state.routeInfo = {
-                    sequence: optimized,
-                    distance: distKm + ' km',
-                    duration: timeMins + ' mins',
-                };
-
-                renderRouteSummary();
-                showRouteView();
-                if(window.innerWidth < 768) toggleMobileSheet(false);
-
-            } catch (err) {
-                console.error("Routing Failed:", err);
-                showToast("Failed to fetch road route. Showing direct path.", "info");
-                
-                // Fallback: Draw straight line
-                if (routeLayer) map.removeLayer(routeLayer);
-                const latlngs = points.map(p => [p.lat, p.lng]);
-                routeLayer = L.polyline(latlngs, {color: '#EA580C', weight: 6, opacity: 0.8}).addTo(map);
-                map.fitBounds(routeLayer.getBounds());
-                
-                let totalDist = 0;
-                for(let i=0; i<points.length-1; i++) totalDist += calcDist(points[i].lat, points[i].lng, points[i+1].lat, points[i+1].lng);
-
-                state.routeInfo = {
-                    sequence: optimized,
-                    distance: totalDist.toFixed(1) + ' km (Direct)',
-                    duration: Math.round(totalDist * 12) + ' mins',
-                };
-                renderRouteSummary();
-                showRouteView();
-                if(window.innerWidth < 768) toggleMobileSheet(false);
-            } finally {
-                setLoadingState(false);
+            let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving`;
+            if (optimized.length > 1) {
+                const waypoints = optimized.slice(0, -1).map(p => `${p.lat},${p.lng}`).join('|');
+                url += `&waypoints=${waypoints}`;
             }
+
+            // 4. Update the UI to show the route plan summary
+            state.routeInfo = {
+                sequence: optimized,
+                googleMapsUrl: url
+            };
+
+            renderRouteSummary();
+            showRouteView();
+            if(window.innerWidth < 768) toggleMobileSheet(false);
+
+            // 5. Instantly open Google Maps for actual navigation
+            setTimeout(() => {
+                window.open(url, '_blank');
+                setLoadingState(false);
+            }, 300); // Tiny delay to let the UI update first
         }
+
+        window.openGoogleMaps = function() {
+            if (state.routeInfo && state.routeInfo.googleMapsUrl) {
+                window.open(state.routeInfo.googleMapsUrl, '_blank');
+            }
+        };
 
         window.clearRoute = function() {
             if (routeLayer) {
@@ -562,21 +550,6 @@
                 map.setView([state.userLocation.lat, state.userLocation.lng], 13, {animate: true});
             }
         }
-
-        window.startLiveNavigation = function() {
-            if (!state.routeInfo || !state.userLocation) return;
-            const origin = `${state.userLocation.lat},${state.userLocation.lng}`;
-            const sequence = state.routeInfo.sequence;
-            const dest = sequence[sequence.length - 1];
-            const destination = `${dest.lat},${dest.lng}`;
-
-            let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving`;
-            if (sequence.length > 1) {
-                const waypoints = sequence.slice(0, -1).map(p => `${p.lat},${p.lng}`).join('|');
-                url += `&waypoints=${waypoints}`;
-            }
-            window.open(url, '_blank');
-        };
 
         function renderPandalList() {
             const q = state.searchQuery.toLowerCase();
@@ -608,9 +581,6 @@
         function renderRouteSummary() {
             if(!state.routeInfo) return;
             
-            document.getElementById('routeDuration').textContent = state.routeInfo.duration;
-            document.getElementById('routeDistance').textContent = `(${state.routeInfo.distance})`;
-
             let html = `
                 <div class="absolute left-[23px] top-8 bottom-8 w-1 bg-gradient-to-b from-puja-red via-puja-route to-puja-gold opacity-30 rounded-full z-0"></div>
                 <div class="flex items-center gap-4 relative z-10 py-4">
@@ -634,9 +604,9 @@
 
             html += `
                 <div class="mt-6 pt-4 border-t border-gray-100 flex flex-col gap-3">
-                    <button onclick="startLiveNavigation()" class="w-full py-4 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold rounded-2xl transition-all shadow-lg flex items-center justify-center gap-2">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
-                        Start Live Navigation (Mobile App)
+                    <button onclick="openGoogleMaps()" class="w-full py-4 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white font-bold rounded-2xl transition-all shadow-lg flex items-center justify-center gap-2">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                        Re-open in Google Maps
                     </button>
                     <button onclick="clearRoute()" class="w-full py-4 bg-gray-100 hover:bg-red-50 text-gray-600 hover:text-red-600 font-bold rounded-2xl transition-colors border border-gray-200">
                         Clear Route & Start Over
@@ -655,7 +625,7 @@
             if (count > 0) {
                 btn.disabled = false;
                 btn.className = "w-full py-4 rounded-2xl font-bold flex items-center justify-center gap-2 shadow-xl transition-all transform hover:-translate-y-1 bg-gradient-to-r from-puja-red to-puja-darkRed text-white hover:shadow-2xl";
-                txt.textContent = `Plan Route (${count} stops)`;
+                txt.textContent = `Open in Google Maps (${count} stops)`;
                 nav.classList.remove('hidden');
             } else {
                 btn.disabled = true;
@@ -676,7 +646,7 @@
                 btn.classList.add('opacity-80');
                 nav.classList.add('hidden');
                 load.classList.remove('hidden');
-                txt.textContent = "Generating Open-Source Route...";
+                txt.textContent = "Opening Maps...";
             } else {
                 updateBottomButton();
                 load.classList.add('hidden');
@@ -759,6 +729,8 @@
         });
 
         document.getElementById('locateUser').addEventListener('click', requestLocation);
+        document.getElementById('planRouteBtn').addEventListener('click', planRoute);
+        document.getElementById('closeRouteBtn').addEventListener('click', showListView);
         
         // Mobile Interactions
         document.getElementById('mobileToggleBtn').addEventListener('click', () => toggleMobileSheet());
